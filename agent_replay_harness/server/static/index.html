@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Replay & Time-Travel Debugging Harness</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    pre, code, .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #1f2937; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center justify-between shadow-lg">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-white shadow-cyan-500/20 shadow-lg">
+        <i class="fa-solid fa-backward-step text-lg"></i>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+          Agent Replay & Time-Travel Debugger
+          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800">LangGraph VCR</span>
+        </h1>
+        <p class="text-xs text-gray-400">Execution Virtualization • Cassette Tapes • State Forking</p>
+      </div>
+    </div>
+    <div class="flex items-center space-x-3">
+      <button onclick="openRunModal()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2 shadow-lg shadow-cyan-600/20">
+        <i class="fa-solid fa-play text-xs"></i> New Run (Record)
+      </button>
+      <button onclick="loadRuns()" class="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition" title="Refresh">
+        <i class="fa-solid fa-rotate text-sm"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Grid -->
+  <main class="flex-1 grid grid-cols-12 gap-6 p-6 overflow-hidden">
+    <!-- Left: Runs List (4 cols) -->
+    <div class="col-span-4 bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col shadow-xl">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-800">
+        <span class="text-sm font-semibold text-gray-300 flex items-center gap-2">
+          <i class="fa-solid fa-tape text-cyan-400"></i> Event Tapes & Trajectories
+        </span>
+        <span id="runCountBadge" class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-mono">0</span>
+      </div>
+      <div id="runsList" class="flex-1 overflow-y-auto mt-3 space-y-2.5 custom-scrollbar pr-1">
+        <div class="text-center py-12 text-gray-500 text-sm">Loading tapes...</div>
+      </div>
+    </div>
+
+    <!-- Right: Active Run Inspector (8 cols) -->
+    <div class="col-span-8 bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col shadow-xl overflow-hidden">
+      <div id="emptyInspector" class="h-full flex flex-col items-center justify-center text-gray-500 space-y-3">
+        <i class="fa-solid fa-code-branch text-4xl text-gray-700"></i>
+        <p class="text-sm">Select a run from the list to inspect time-travel snapshots and tool cassettes.</p>
+      </div>
+
+      <div id="inspectorContent" class="h-full flex flex-col hidden overflow-hidden">
+        <!-- Run Meta Header -->
+        <div class="flex items-start justify-between pb-4 border-b border-gray-800">
+          <div>
+            <div class="flex items-center gap-2">
+              <span id="activeRunModeBadge" class="text-xs px-2.5 py-0.5 rounded-full font-bold"></span>
+              <h2 id="activeRunId" class="text-base font-bold text-white font-mono"></h2>
+            </div>
+            <p id="activeRunSubtext" class="text-xs text-gray-400 mt-1"></p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="replayCurrentRun()" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
+              <i class="fa-solid fa-repeat"></i> Replay Tape (0 Cost)
+            </button>
+            <button onclick="openForkModalForCurrentStep()" class="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
+              <i class="fa-solid fa-code-fork"></i> Fork From Step <span id="currentForkStepNum">1</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Time-Travel Scrubber / Step DAG -->
+        <div class="py-4 border-b border-gray-800">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-clock-rotate-left text-cyan-400"></i> Time-Travel Timeline (LangGraph Steps)
+            </span>
+            <span class="text-xs text-gray-400">Scrub step to inspect state</span>
+          </div>
+          <div id="stepScrubber" class="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
+            <!-- Rendered step pills -->
+          </div>
+        </div>
+
+        <!-- Details Panes: Memory State & Tool Cassette Tabs -->
+        <div class="flex-1 flex flex-col min-h-0 pt-4 overflow-hidden">
+          <div class="flex items-center space-x-4 border-b border-gray-800 mb-3">
+            <button onclick="switchTab('state')" id="tabBtnState" class="pb-2 text-xs font-semibold border-b-2 border-cyan-500 text-cyan-400 flex items-center gap-1.5">
+              <i class="fa-solid fa-database"></i> Memory Snapshot
+            </button>
+            <button onclick="switchTab('diff')" id="tabBtnDiff" class="pb-2 text-xs font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-1.5">
+              <i class="fa-solid fa-code-compare"></i> State Delta (Diff)
+            </button>
+            <button onclick="switchTab('cassette')" id="tabBtnCassette" class="pb-2 text-xs font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-1.5">
+              <i class="fa-solid fa-microchip"></i> VCR Tool Cassettes
+              <span id="cassetteCountBadge" class="bg-gray-800 text-gray-300 px-1.5 py-0.2 rounded-full font-mono text-[10px]">0</span>
+            </button>
+          </div>
+
+          <!-- State Snapshot View -->
+          <div id="statePane" class="flex-1 overflow-y-auto custom-scrollbar bg-gray-950 p-4 rounded-lg border border-gray-800 font-mono text-xs text-gray-300">
+            <pre id="stateContent"></pre>
+          </div>
+
+          <!-- State Diff View -->
+          <div id="diffPane" class="flex-1 overflow-y-auto custom-scrollbar bg-gray-950 p-4 rounded-lg border border-gray-800 font-mono text-xs text-gray-300 hidden">
+            <pre id="diffContent"></pre>
+          </div>
+
+          <!-- VCR Cassette Table -->
+          <div id="cassettePane" class="flex-1 overflow-y-auto custom-scrollbar hidden">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-gray-950 text-gray-400 uppercase text-[10px] tracking-wider border-b border-gray-800 sticky top-0">
+                <tr>
+                  <th class="p-2.5">Step</th>
+                  <th class="p-2.5">Tool Name</th>
+                  <th class="p-2.5">Hash Key</th>
+                  <th class="p-2.5">Latency</th>
+                  <th class="p-2.5">Status</th>
+                  <th class="p-2.5 text-right">Details</th>
+                </tr>
+              </thead>
+              <tbody id="cassetteTableBody" class="divide-y divide-gray-800"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Run Modal -->
+  <div id="runModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl max-w-lg w-full p-6 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-play text-cyan-400"></i> Trigger New Workflow Run
+        </h3>
+        <button onclick="closeRunModal()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-300 mb-1">Agent Query / Goal</label>
+          <input type="text" id="runQueryInput" value="Analyze TSLA risk and filings" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-300 mb-1">Execution Mode</label>
+          <select id="runModeSelect" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+            <option value="RECORD" selected>RECORD (Execute live & record cassette tape)</option>
+            <option value="PASSTHROUGH">PASSTHROUGH (Execute live without virtualization)</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button onclick="closeRunModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm font-medium transition">Cancel</button>
+        <button onclick="submitRun()" id="submitRunBtn" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
+          <span>Start Execution</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fork & Patch Modal -->
+  <div id="forkModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl max-w-lg w-full p-6 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-code-fork text-purple-400"></i> Time-Travel Execution Branching
+        </h3>
+        <button onclick="closeForkModal()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-300 mb-1">Fork from Step Number</label>
+          <input type="number" id="forkStepInput" value="2" min="1" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-2.5 text-sm text-white focus:border-purple-500 focus:outline-none font-mono" />
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs font-medium text-gray-300">State Memory Patch (JSON)</label>
+            <span class="text-[10px] text-gray-500">Inject state variables into snapshot k</span>
+          </div>
+          <textarea id="forkStatePatch" rows="4" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-2.5 text-xs text-white focus:border-purple-500 focus:outline-none font-mono custom-scrollbar">{
+  "market_data": {
+    "status": "circuit_breaker_triggered",
+    "error": "Flash crash detected (-12% spike)"
+  }
+}</textarea>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs font-medium text-gray-300">Tool Result Patch / Fault Injection (JSON)</label>
+            <span class="text-[10px] text-gray-500">Optional tool mocking</span>
+          </div>
+          <textarea id="forkToolPatch" rows="2" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-2.5 text-xs text-white focus:border-purple-500 focus:outline-none font-mono custom-scrollbar">{
+  "tool_result": "Error 404: EDGAR Service Offline"
+}</textarea>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button onclick="closeForkModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm font-medium transition">Cancel</button>
+        <button onclick="submitFork()" id="submitForkBtn" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
+          <span>Fork & Resume Forward</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeRunId = null;
+    let activeSnapshots = [];
+    let activeCassette = [];
+    let selectedStep = 1;
+
+    async function loadRuns() {
+      try {
+        const res = await fetch('/api/runs');
+        const runs = await res.json();
+        document.getElementById('runCountBadge').textContent = runs.length;
+        const container = document.getElementById('runsList');
+        if (runs.length === 0) {
+          container.innerHTML = '<div class="text-center py-12 text-gray-500 text-sm">No recorded runs yet.<br>Click "New Run" to start.</div>';
+          return;
+        }
+
+        container.innerHTML = runs.map(r => {
+          const isSelected = r.run_id === activeRunId;
+          const modeColor = r.mode === 'RECORD' ? 'bg-cyan-950 text-cyan-400 border-cyan-800' :
+                           (r.mode === 'REPLAY' ? 'bg-emerald-950 text-emerald-400 border-emerald-800' :
+                           'bg-purple-950 text-purple-300 border-purple-800');
+          const borderClass = isSelected ? 'border-cyan-500 bg-gray-800/80 shadow-md shadow-cyan-500/10' : 'border-gray-800 hover:border-gray-700 bg-gray-950/60';
+          const parentBadge = r.parent_run_id ? `<span class="text-[10px] text-purple-400">Fork of ${r.parent_run_id.slice(0,6)}@s${r.fork_step}</span>` : '';
+
+          return `
+            <div onclick="selectRun('${r.run_id}')" class="p-3 rounded-lg border ${borderClass} cursor-pointer transition flex flex-col space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border ${modeColor}">${r.mode}</span>
+                <span class="text-[11px] font-mono text-gray-400">${new Date(r.created_at).toLocaleTimeString()}</span>
+              </div>
+              <div class="text-xs font-mono font-semibold text-gray-200 truncate">${r.run_id}</div>
+              <div class="flex items-center justify-between text-[11px] text-gray-400">
+                <span>Steps: <b class="text-gray-200">${r.step_count}</b> • Tools: <b class="text-gray-200">${r.tool_call_count}</b></span>
+                ${parentBadge}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        if (!activeRunId && runs.length > 0) {
+          selectRun(runs[0].run_id);
+        }
+      } catch (err) {
+        console.error("Failed to load runs:", err);
+      }
+    }
+
+    async function selectRun(runId) {
+      activeRunId = runId;
+      document.getElementById('emptyInspector').classList.add('hidden');
+      document.getElementById('inspectorContent').classList.remove('hidden');
+
+      // Fetch manifest, snapshots, cassettes
+      const [manifestRes, snapsRes, cassRes] = await Promise.all([
+        fetch(`/api/runs/${runId}`),
+        fetch(`/api/runs/${runId}/snapshots`),
+        fetch(`/api/runs/${runId}/cassette`),
+      ]);
+
+      const manifest = await manifestRes.json();
+      activeSnapshots = await snapsRes.json();
+      activeCassette = await cassRes.json();
+
+      document.getElementById('activeRunId').textContent = manifest.run_id;
+      const modeBadge = document.getElementById('activeRunModeBadge');
+      modeBadge.textContent = manifest.mode;
+      modeBadge.className = `text-xs px-2.5 py-0.5 rounded-full font-bold ` +
+        (manifest.mode === 'RECORD' ? 'bg-cyan-950 text-cyan-400 border border-cyan-800' :
+        (manifest.mode === 'REPLAY' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' :
+        'bg-purple-950 text-purple-300 border border-purple-800'));
+
+      const parentInfo = manifest.parent_run_id ? `Forked from ${manifest.parent_run_id} at step ${manifest.fork_step}` : 'Root Execution Tape';
+      document.getElementById('activeRunSubtext').textContent = `${parentInfo} • Status: ${manifest.status}`;
+      document.getElementById('cassetteCountBadge').textContent = activeCassette.length;
+
+      // Render step scrubber
+      renderStepScrubber();
+      // Select last step by default or step 1
+      selectStep(activeSnapshots.length > 0 ? activeSnapshots[0].step : 1);
+      renderCassetteTable();
+      loadRuns(); // Re-render run list to update selected highlight
+    }
+
+    function renderStepScrubber() {
+      const container = document.getElementById('stepScrubber');
+      if (activeSnapshots.length === 0) {
+        container.innerHTML = '<span class="text-xs text-gray-500">No checkpoints recorded</span>';
+        return;
+      }
+
+      container.innerHTML = activeSnapshots.map(s => {
+        const isCurrent = s.step === selectedStep;
+        const activeClass = isCurrent ? 'bg-cyan-600 text-white border-cyan-400 shadow-md shadow-cyan-600/30' : 'bg-gray-800/80 text-gray-300 border-gray-700 hover:border-gray-500';
+        return `
+          <button onclick="selectStep(${s.step})" class="px-3 py-1.5 rounded-lg border text-xs font-medium transition flex items-center gap-1.5 flex-shrink-0 ${activeClass}">
+            <span class="font-mono font-bold">s${s.step}</span>
+            <span class="text-[11px]">${s.node_name}</span>
+          </button>
+        `;
+      }).join('<span class="text-gray-600"><i class="fa-solid fa-arrow-right text-[10px]"></i></span>');
+    }
+
+    function selectStep(stepNum) {
+      selectedStep = stepNum;
+      document.getElementById('currentForkStepNum').textContent = stepNum;
+      renderStepScrubber();
+
+      const snap = activeSnapshots.find(s => s.step === stepNum);
+      if (snap) {
+        document.getElementById('stateContent').textContent = JSON.stringify(snap.state_data, null, 2);
+        document.getElementById('diffContent').textContent = snap.diff_from_parent ? JSON.stringify(snap.diff_from_parent, null, 2) : "Initial state checkpoint (no parent diff)";
+      }
+    }
+
+    function renderCassetteTable() {
+      const tbody = document.getElementById('cassetteTableBody');
+      if (activeCassette.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="p-6 text-center text-gray-500">No tool calls recorded in cassette</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = activeCassette.map((c, i) => {
+        const statusBadge = c.error ? '<span class="text-red-400 font-bold">ERROR</span>' : '<span class="text-green-400 font-bold">OK</span>';
+        return `
+          <tr class="hover:bg-gray-800/50 transition">
+            <td class="p-2.5 font-mono text-gray-400">s${c.step}</td>
+            <td class="p-2.5 font-mono text-cyan-300 font-semibold">${c.tool_name}</td>
+            <td class="p-2.5 font-mono text-gray-500 text-[11px]">${c.hash_key}</td>
+            <td class="p-2.5 text-gray-400">${c.duration_ms.toFixed(1)}ms</td>
+            <td class="p-2.5">${statusBadge}</td>
+            <td class="p-2.5 text-right">
+              <button onclick="alert('Tool: ${c.tool_name}\\nArgs: ${JSON.stringify(c.args)}\\nResult: ${JSON.stringify(c.result)}')" class="px-2 py-0.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded text-[11px]">Inspect</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function switchTab(tab) {
+      document.getElementById('statePane').classList.toggle('hidden', tab !== 'state');
+      document.getElementById('diffPane').classList.toggle('hidden', tab !== 'diff');
+      document.getElementById('cassettePane').classList.toggle('hidden', tab !== 'cassette');
+
+      document.getElementById('tabBtnState').className = tab === 'state' ? 'pb-2 text-xs font-semibold border-b-2 border-cyan-500 text-cyan-400 flex items-center gap-1.5' : 'pb-2 text-xs font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
+      document.getElementById('tabBtnDiff').className = tab === 'diff' ? 'pb-2 text-xs font-semibold border-b-2 border-cyan-500 text-cyan-400 flex items-center gap-1.5' : 'pb-2 text-xs font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
+      document.getElementById('tabBtnCassette').className = tab === 'cassette' ? 'pb-2 text-xs font-semibold border-b-2 border-cyan-500 text-cyan-400 flex items-center gap-1.5' : 'pb-2 text-xs font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
+    }
+
+    function openRunModal() { document.getElementById('runModal').classList.remove('hidden'); document.getElementById('runModal').classList.add('flex'); }
+    function closeRunModal() { document.getElementById('runModal').classList.add('hidden'); document.getElementById('runModal').classList.remove('flex'); }
+
+    function openForkModalForCurrentStep() {
+      document.getElementById('forkStepInput').value = selectedStep;
+      document.getElementById('forkModal').classList.remove('hidden');
+      document.getElementById('forkModal').classList.add('flex');
+    }
+    function closeForkModal() { document.getElementById('forkModal').classList.add('hidden'); document.getElementById('forkModal').classList.remove('flex'); }
+
+    async function submitRun() {
+      const query = document.getElementById('runQueryInput').value;
+      const mode = document.getElementById('runModeSelect').value;
+      const btn = document.getElementById('submitRunBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running...';
+
+      try {
+        const res = await fetch('/api/runs/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, mode })
+        });
+        const data = await res.json();
+        closeRunModal();
+        await loadRuns();
+        selectRun(data.run_id);
+      } catch (err) {
+        alert("Run execution failed: " + err);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Start Execution</span>';
+      }
+    }
+
+    async function replayCurrentRun() {
+      if (!activeRunId) return;
+      try {
+        const res = await fetch(`/api/runs/${activeRunId}/replay`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strict: true })
+        });
+        const data = await res.json();
+        alert(`Deterministic Replay Succeeded!\nReplayed Run ID: ${data.replay_id}\nTool Calls Served: ${data.total_tool_calls} (0 API Calls Made)`);
+        await loadRuns();
+        selectRun(data.replay_id);
+      } catch (err) {
+        alert("Replay failed: " + err);
+      }
+    }
+
+    async function submitFork() {
+      if (!activeRunId) return;
+      const forkStep = parseInt(document.getElementById('forkStepInput').value);
+      let patchState = null;
+      let patchTool = null;
+      try {
+        const sVal = document.getElementById('forkStatePatch').value.trim();
+        if (sVal) patchState = JSON.parse(sVal);
+      } catch (e) {
+        alert("Invalid State Patch JSON: " + e);
+        return;
+      }
+      try {
+        const tVal = document.getElementById('forkToolPatch').value.trim();
+        if (tVal) patchTool = JSON.parse(tVal);
+      } catch (e) {
+        alert("Invalid Tool Patch JSON: " + e);
+        return;
+      }
+
+      const btn = document.getElementById('submitForkBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Forking...';
+
+      try {
+        const res = await fetch(`/api/runs/${activeRunId}/fork`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fork_at_step: forkStep,
+            patch_state: patchState,
+            patch_tool_results: patchTool
+          })
+        });
+        const data = await res.json();
+        closeForkModal();
+        await loadRuns();
+        selectRun(data.run_id);
+      } catch (err) {
+        alert("Fork failed: " + err);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Fork & Resume Forward</span>';
+      }
+    }
+
+    // Initial load
+    loadRuns();
+  </script>
+</body>
+</html>
