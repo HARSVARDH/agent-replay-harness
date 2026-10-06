@@ -32,6 +32,9 @@
       </div>
     </div>
     <div class="flex items-center space-x-3">
+      <button onclick="openChaosModal()" class="px-3 py-2 bg-purple-900/60 hover:bg-purple-800 text-purple-300 border border-purple-700/50 rounded-lg text-sm font-medium transition flex items-center gap-2 shadow-lg">
+        <i class="fa-solid fa-bolt text-xs"></i> Chaos Matrix
+      </button>
       <button onclick="openRunModal()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2 shadow-lg shadow-cyan-600/20">
         <i class="fa-solid fa-play text-xs"></i> New Run (Record)
       </button>
@@ -74,6 +77,9 @@
             <p id="activeRunSubtext" class="text-xs text-gray-400 mt-1"></p>
           </div>
           <div class="flex items-center gap-2">
+            <button onclick="exportCurrentCrash()" class="px-2.5 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium transition flex items-center gap-1.5" title="Export portable .harness-crash bundle">
+              <i class="fa-solid fa-camera"></i> Crash Cam
+            </button>
             <button onclick="replayCurrentRun()" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
               <i class="fa-solid fa-repeat"></i> Replay Tape (0 Cost)
             </button>
@@ -214,6 +220,33 @@
         <button onclick="submitFork()" id="submitForkBtn" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
           <span>Fork & Resume Forward</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chaos Matrix Modal -->
+  <div id="chaosModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+    <div class="bg-gray-900 border border-purple-800/80 rounded-xl max-w-2xl w-full p-6 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-bolt text-purple-400"></i> Agent Chaos Resilience Matrix
+        </h3>
+        <button onclick="closeChaosModal()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <p class="text-xs text-gray-400 mb-4">
+        Injects HTTP 504 timeouts, 429 rate limits, and 500 errors into the graph to test automated recovery and self-healing.
+      </p>
+      <div id="chaosResultsContainer" class="min-h-[160px] flex items-center justify-center border border-gray-800 rounded-lg p-3 bg-gray-950 font-mono text-xs overflow-x-auto custom-scrollbar">
+        <span class="text-gray-500">Click "Run Resilience Suite" below to execute.</span>
+      </div>
+      <div class="flex justify-between items-center mt-6">
+        <span id="chaosScoreBadge" class="text-xs font-bold text-purple-400"></span>
+        <div class="flex gap-3">
+          <button onclick="closeChaosModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm font-medium transition">Close</button>
+          <button onclick="triggerChaosMatrix()" id="chaosRunBtn" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
+            <span>Run Resilience Suite</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -462,6 +495,63 @@
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>Fork & Resume Forward</span>';
+      }
+    }
+
+    function openChaosModal() {
+      document.getElementById('chaosModal').classList.remove('hidden');
+      document.getElementById('chaosModal').classList.add('flex');
+    }
+
+    function closeChaosModal() {
+      document.getElementById('chaosModal').classList.add('hidden');
+      document.getElementById('chaosModal').classList.remove('flex');
+    }
+
+    async function triggerChaosMatrix() {
+      const btn = document.getElementById('chaosRunBtn');
+      const container = document.getElementById('chaosResultsContainer');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Injecting Faults...';
+      container.innerHTML = '<div class="text-purple-400 text-center py-6">Simulating 504 timeouts, 429 rate limits, and 500 errors across nodes...</div>';
+      try {
+        const res = await fetch('/api/chaos/run', { method: 'POST' });
+        const data = await res.json();
+        document.getElementById('chaosScoreBadge').textContent = `Resilience Score: ${data.resilience_score_pct}% (${data.passed_scenarios}/${data.total_scenarios} Recovered)`;
+        container.innerHTML = `
+          <table class="w-full text-left text-xs">
+            <thead class="text-gray-400 border-b border-gray-800">
+              <tr><th class="p-2">Scenario</th><th class="p-2">Type</th><th class="p-2">Outcome</th><th class="p-2">Remediation Action Taken</th></tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+              ${data.scenarios.map(s => `
+                <tr>
+                  <td class="p-2 text-white font-semibold">${s.name}</td>
+                  <td class="p-2 text-yellow-400 text-[11px]">${s.fault_type}</td>
+                  <td class="p-2">${s.recovered ? '<span class="text-green-400 font-bold">PASS (Healed)</span>' : '<span class="text-red-400 font-bold">FAIL</span>'}</td>
+                  <td class="p-2 text-gray-400 text-[11px] truncate max-w-[200px]">${s.recovery_action || 'None'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+        await loadRuns();
+      } catch (err) {
+        container.innerHTML = `<span class="text-red-400">Chaos testing failed: ${err}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Run Resilience Suite</span>';
+      }
+    }
+
+    async function exportCurrentCrash() {
+      if (!activeRunId) return;
+      try {
+        const res = await fetch(`/api/crash/${activeRunId}/export`);
+        const data = await res.json();
+        alert(`Incident Crash Bundle Exported!\nBundle Path: ${data.bundle_path}\n\nTo debug locally:\nagent-harness crash-import ${data.bundle_path}`);
+      } catch (err) {
+        alert("Export failed: " + err);
       }
     }
 

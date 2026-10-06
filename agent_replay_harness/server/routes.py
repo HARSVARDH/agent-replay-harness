@@ -101,3 +101,35 @@ def fork_run(run_id: str, req: ForkRequest) -> Dict[str, Any]:
 def diff_runs(run_1_id: str = Query(...), run_2_id: str = Query(...)) -> DiffResult:
     """Compare two runs side-by-side."""
     return storage.diff_runs(run_1_id, run_2_id)
+
+
+@router.post("/registry/sync")
+def sync_cassette(tape: CassetteTape) -> Dict[str, Any]:
+    """Ingest a complete cassette tape bundle from local runner or CI/CD."""
+    storage.create_run(tape.manifest)
+    for ev in tape.events:
+        storage.append_event(ev)
+    for snap in tape.snapshots:
+        storage.save_snapshot(snap)
+    for tc in tape.tool_calls:
+        storage.record_tool_call(tc)
+    return {"status": "synced", "run_id": tape.manifest.run_id, "tool_calls": len(tape.tool_calls)}
+
+
+@router.post("/chaos/run")
+def run_chaos_test(query: str = Query("Analyze TSLA risk and filings")) -> Dict[str, Any]:
+    """Execute automated chaos engineering matrix and return resilience score."""
+    from agent_replay_harness.chaos import run_chaos_matrix
+    report = run_chaos_matrix(query=query, storage=storage)
+    return report.model_dump(mode="json")
+
+
+@router.get("/crash/{run_id}/export")
+def export_crash(run_id: str) -> Dict[str, Any]:
+    """Export portable .harness-crash bundle for production incident triage."""
+    from agent_replay_harness.crash_cam import export_crash_bundle
+    try:
+        path = export_crash_bundle(run_id=run_id, storage=storage)
+        return {"status": "exported", "incident_id": f"INCIDENT-{run_id[:8]}", "bundle_path": str(path)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

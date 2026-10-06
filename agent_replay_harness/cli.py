@@ -355,6 +355,85 @@ def serve_command(
     uvicorn.run("agent_replay_harness.server.app:app", host=host, port=port, reload=reload)
 
 
+@app.command("chaos")
+def chaos_command(
+    query: str = typer.Option("Analyze TSLA risk and filings", "--query", "-q", help="Agent goal to stress test"),
+    backend: str = typer.Option("file", "--backend", "-b", help="Storage backend (file or sqlite)"),
+    storage_dir: str = typer.Option(".tapes", "--storage-dir", "-d", help="Tapes directory"),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON"),
+) -> None:
+    """Run automated Chaos Resilience Testing Matrix (504 timeouts, 429 rate limits, 500 errors)."""
+    from agent_replay_harness.chaos import print_chaos_report, run_chaos_matrix
+
+    storage = _get_storage(backend, storage_dir)
+    with console.status("[bold magenta]Running Chaos Fault Injection Matrix...", spinner="aesthetic"):
+        report = run_chaos_matrix(query=query, storage=storage)
+
+    if json_output:
+        console.print_json(report.model_dump_json(indent=2))
+        return
+
+    print_chaos_report(report)
+    if report.resilience_score_pct < 100.0:
+        raise typer.Exit(1)
+
+
+@app.command("crash-export")
+def crash_export_command(
+    run_id: str = typer.Option(..., "--run-id", "-r", help="Run ID of the failed incident"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output .harness-crash file path"),
+    backend: str = typer.Option("file", "--backend", "-b", help="Storage backend"),
+    storage_dir: str = typer.Option(".tapes", "--storage-dir", "-d", help="Tapes directory"),
+) -> None:
+    """Export self-contained incident bundle (.harness-crash) for production triage."""
+    from agent_replay_harness.crash_cam import export_crash_bundle
+
+    storage = _get_storage(backend, storage_dir)
+    try:
+        out_path = export_crash_bundle(run_id=run_id, output_path=output, storage=storage)
+        console.print(f"[bold green]✔ Exported incident crash bundle to:[/bold green] [bold cyan]{out_path}[/bold cyan]")
+    except Exception as exc:
+        console.print(f"[bold red]Export failed: {exc}[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command("crash-import")
+def crash_import_command(
+    bundle_path: str = typer.Argument(..., help="Path to .harness-crash bundle file"),
+    backend: str = typer.Option("file", "--backend", "-b", help="Storage backend"),
+    storage_dir: str = typer.Option(".tapes", "--storage-dir", "-d", help="Tapes directory"),
+) -> None:
+    """Import a .harness-crash bundle to debug production incidents locally."""
+    from agent_replay_harness.crash_cam import import_crash_bundle
+
+    storage = _get_storage(backend, storage_dir)
+    try:
+        imported_id = import_crash_bundle(bundle_path=bundle_path, target_storage=storage)
+        console.print(f"[bold green]✔ Imported incident into local storage with Run ID:[/bold green] [bold cyan]{imported_id}[/bold cyan]")
+        console.print(f"Inspect steps with: [dim]agent-harness inspect --run-id {imported_id}[/dim]")
+    except Exception as exc:
+        console.print(f"[bold red]Import failed: {exc}[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command("sync")
+def sync_command(
+    run_id: str = typer.Option(..., "--run-id", "-r", help="Run ID to push to cloud registry"),
+    endpoint: str = typer.Option("http://127.0.0.1:8000", "--endpoint", "-e", help="SaaS registry endpoint"),
+    storage_dir: str = typer.Option(".tapes", "--storage-dir", "-d", help="Tapes directory"),
+) -> None:
+    """Push local cassette tape to the SaaS Cloud Registry."""
+    from agent_replay_harness.storage.remote import RemoteTapeStorage
+
+    remote = RemoteTapeStorage(endpoint=endpoint, local_cache_dir=storage_dir)
+    success = remote.sync_tape_to_cloud(run_id)
+    if success:
+        console.print(f"[bold green]✔ Successfully synced tape '{run_id}' to Cloud Registry at {endpoint}[/bold green]")
+    else:
+        console.print(f"[bold red]Failed to sync tape to {endpoint}[/bold red]")
+        raise typer.Exit(1)
+
+
 def main():
     app()
 

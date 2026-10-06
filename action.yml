@@ -1,0 +1,56 @@
+name: 'Agent Replay Harness CI Action'
+description: 'Deterministic Replay, Zero-Cost Regression Testing, and Chaos Engineering for LangGraph Agents'
+author: 'Agentic Systems Engineer'
+
+inputs:
+  mode:
+    description: 'Test mode: "replay" or "chaos"'
+    required: false
+    default: 'replay'
+  run-id:
+    description: 'Historical run ID to replay'
+    required: false
+  strict:
+    description: 'Strict cassette matching (true/false)'
+    required: false
+    default: 'true'
+  storage-dir:
+    description: 'Cassettes directory'
+    required: false
+    default: '.tapes'
+
+outputs:
+  status:
+    description: 'Pass or Fail'
+  replayed-calls:
+    description: 'Total tool calls served from tape'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Agent Harness
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+
+    - name: Run Deterministic Replay or Chaos Suite
+      shell: bash
+      run: |
+        if [ "${{ inputs.mode }}" = "chaos" ]; then
+          echo "Running Agent Chaos Engineering Matrix..."
+          agent-harness chaos --storage-dir "${{ inputs.storage-dir }}"
+        else
+          echo "Running Deterministic Agent Replay..."
+          if [ -n "${{ inputs.run-id }}" ]; then
+            agent-harness replay --run-id "${{ inputs.run-id }}" --storage-dir "${{ inputs.storage-dir }}"
+          else
+            echo "Running baseline test suite..."
+            pytest tests/
+          fi
+        fi

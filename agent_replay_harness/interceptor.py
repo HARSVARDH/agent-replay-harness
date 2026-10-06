@@ -234,10 +234,22 @@ def _handle_replay(
     hash_key: str,
     call_index: int,
 ) -> Any:
-    """Lookup and return recorded tool response from cassette tape."""
+    """Lookup and return recorded tool response from cassette tape with fuzzy fallback."""
+    from agent_replay_harness.fuzzy_matcher import fuzzy_match_record
+
     record = ctx.storage.get_tool_call(ctx.run_id, hash_key, call_index)
     if record is None and ctx.parent_run_id:
         record = ctx.storage.get_tool_call(ctx.parent_run_id, hash_key, call_index)
+
+    # If exact hash miss, attempt resilient fuzzy/normalized matching
+    if record is None:
+        candidates = ctx.storage.list_tool_calls(ctx.run_id)
+        if not candidates and ctx.parent_run_id:
+            candidates = ctx.storage.list_tool_calls(ctx.parent_run_id)
+
+        fuzzy_rec, score = fuzzy_match_record(tool_name, list(args), kwargs, candidates)
+        if fuzzy_rec is not None:
+            return _serve_from_record(ctx, fuzzy_rec, tool_name, args, kwargs, similarity=score)
 
     if record is None:
         if ctx.strict_replay:
@@ -253,6 +265,7 @@ def _serve_from_record(
     tool_name: str,
     args: Any,
     kwargs: Any,
+    similarity: Optional[float] = None,
 ) -> Any:
     """Emit replay event and return payload or re-raise error from record."""
     ctx.storage.append_event(
@@ -269,6 +282,8 @@ def _serve_from_record(
                 "hash_key": record.hash_key,
                 "call_index": record.call_index,
                 "replayed": True,
+                "fuzzy_matched": similarity is not None,
+                "similarity_score": similarity,
                 "original_duration_ms": record.duration_ms,
             },
             trace_id=ctx.trace_id,
