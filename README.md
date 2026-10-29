@@ -1,6 +1,6 @@
 # Deterministic Replay & Time-Travel Debugging Harness for Agent Workflows
 
-A production-grade execution virtualization, VCR cassette interception, and time-travel debugging engine designed for **LangGraph** state machines and autonomous AI agent workflows.
+Record a **LangGraph** agent run once, then replay it deterministically with zero API cost, fork it at any step to test failure recovery, and diff the two trajectories side by side.
 
 ---
 
